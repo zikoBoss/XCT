@@ -134,6 +134,7 @@ export interface UserAuthOperations {
 export interface User {
   id: number;
   role: 'admin' | 'editor';
+  isActive: boolean;
   updatedAt: string;
   createdAt: string;
   email: string;
@@ -172,6 +173,16 @@ export interface Media {
   height?: number | null;
   focalX?: number | null;
   focalY?: number | null;
+  sizes?: {
+    thumbnail?: {
+      url?: string | null;
+      width?: number | null;
+      height?: number | null;
+      mimeType?: string | null;
+      filesize?: number | null;
+      filename?: string | null;
+    };
+  };
 }
 /**
  * This interface was referenced by `Config`'s JSON-Schema
@@ -380,6 +391,7 @@ export interface PayloadMigration {
  */
 export interface UsersSelect<T extends boolean = true> {
   role?: T;
+  isActive?: T;
   updatedAt?: T;
   createdAt?: T;
   email?: T;
@@ -415,6 +427,20 @@ export interface MediaSelect<T extends boolean = true> {
   height?: T;
   focalX?: T;
   focalY?: T;
+  sizes?:
+    | T
+    | {
+        thumbnail?:
+          | T
+          | {
+              url?: T;
+              width?: T;
+              height?: T;
+              mimeType?: T;
+              filesize?: T;
+              filename?: T;
+            };
+      };
 }
 /**
  * This interface was referenced by `Config`'s JSON-Schema
@@ -549,6 +575,23 @@ export interface Home {
         id?: string | null;
       }[]
     | null;
+  sectionOrder?:
+    | {
+        section: 'news' | 'projects' | 'hubs';
+        id?: string | null;
+      }[]
+    | null;
+  seo?: {
+    title?: string | null;
+    description?: string | null;
+    image?: (number | null) | Media;
+  };
+  displaySettings?: {
+    layout?: ('standard' | 'compact') | null;
+    showNews?: boolean | null;
+    showProjects?: boolean | null;
+    showHubs?: boolean | null;
+  };
   _status?: ('draft' | 'published') | null;
   updatedAt?: string | null;
   createdAt?: string | null;
@@ -574,6 +617,27 @@ export interface HomeSelect<T extends boolean = true> {
         label?: T;
         url?: T;
         id?: T;
+      };
+  sectionOrder?:
+    | T
+    | {
+        section?: T;
+        id?: T;
+      };
+  seo?:
+    | T
+    | {
+        title?: T;
+        description?: T;
+        image?: T;
+      };
+  displaySettings?:
+    | T
+    | {
+        layout?: T;
+        showNews?: T;
+        showProjects?: T;
+        showHubs?: T;
       };
   _status?: T;
   updatedAt?: T;

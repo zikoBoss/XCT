@@ -1,12 +1,17 @@
 import type { CollectionConfig } from 'payload'
+import { canManageContent, isAdmin } from '../access/roles'
+import { preventDeletingReferencedMedia, readMedia } from '../access/media'
 
 export const Media: CollectionConfig = {
   slug: 'media',
   access: {
-    create: () => false,
-    delete: () => false,
-    read: () => false,
-    update: () => false,
+    create: canManageContent,
+    delete: isAdmin,
+    read: readMedia,
+    update: canManageContent,
+  },
+  hooks: {
+    beforeDelete: [preventDeletingReferencedMedia],
   },
   fields: [
     {
@@ -15,5 +20,7 @@ export const Media: CollectionConfig = {
       required: true,
     },
   ],
-  upload: true,
+  upload: {
+    imageSizes: [{ name: 'thumbnail', width: 320, height: 320, fit: 'inside' }],
+  },
 }

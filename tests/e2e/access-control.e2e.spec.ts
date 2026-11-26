@@ -35,15 +35,15 @@ test.describe.serial('REST and GraphQL access control', () => {
     payload = await getPayload({ config: await config })
     admin = await payload.create({
       collection: 'users',
-      data: { email: userEmails[0], password, role: 'admin' },
+      data: { email: userEmails[0], password, role: 'admin', isActive: true },
     })
     editor = await payload.create({
       collection: 'users',
-      data: { email: userEmails[1], password, role: 'editor' },
+      data: { email: userEmails[1], password, role: 'editor', isActive: true },
     })
     otherEditor = await payload.create({
       collection: 'users',
-      data: { email: userEmails[2], password, role: 'editor' },
+      data: { email: userEmails[2], password, role: 'editor', isActive: true },
     })
 
     const draftProject = await payload.create({
@@ -463,5 +463,80 @@ test.describe.serial('REST and GraphQL access control', () => {
       ).status(),
     ).toBe(200)
     expect((await request.delete(`${serverURL}/api/users/${userID}`)).status()).toBe(200)
+  })
+
+  test('an existing editor session loses protected permissions after deactivation', async ({
+    request,
+  }) => {
+    const login = await request.post(`${serverURL}/api/users/login`, {
+      data: { email: userEmails[1], password },
+    })
+    expect(login.status()).toBe(200)
+
+    const draftBeforeDeactivation = await request.get(
+      `${serverURL}/api/news?draft=true&where%5Bslug%5D%5Bequals%5D=${draftSlug}`,
+    )
+    expect((await draftBeforeDeactivation.json()).docs).toHaveLength(1)
+
+    await payload.update({
+      collection: 'users',
+      id: editor.id,
+      data: { isActive: false },
+      overrideAccess: true,
+    })
+
+    try {
+      for (const [collection, slug] of [
+        ['news', draftSlug],
+        ['projects', draftProjectSlug],
+        ['hubs', draftHubSlug],
+      ]) {
+        const draft = await request.get(
+          `${serverURL}/api/${collection}?draft=true&where%5Bslug%5D%5Bequals%5D=${slug}`,
+        )
+        expect((await draft.json()).docs).toHaveLength(0)
+      }
+
+      const published = await request.get(
+        `${serverURL}/api/news?draft=true&where%5Bslug%5D%5Bequals%5D=${publishedSlug}`,
+      )
+      expect((await published.json()).docs).toHaveLength(1)
+
+      const graphqlDrafts = await request.post(`${serverURL}/api/graphql`, {
+        data: {
+          query: `query {
+            allNews(where: { slug: { equals: "${draftSlug}" } }) { docs { id } }
+            Projects(where: { slug: { equals: "${draftProjectSlug}" } }) { docs { id } }
+            Hubs(where: { slug: { equals: "${draftHubSlug}" } }) { docs { id } }
+          }`,
+        },
+      })
+      const graphqlBody = await graphqlDrafts.json()
+      expect(graphqlBody.errors).toBeUndefined()
+      expect(graphqlBody.data.allNews.docs).toHaveLength(0)
+      expect(graphqlBody.data.Projects.docs).toHaveLength(0)
+      expect(graphqlBody.data.Hubs.docs).toHaveLength(0)
+
+      const homeDraft = await request.get(`${serverURL}/api/globals/home?draft=true`)
+      expect(homeDraft.status()).toBe(403)
+
+      const writeAttempt = await request.post(`${serverURL}/api/news`, {
+        data: {
+          title: 'Inactive editor content',
+          slug: `b2-e2e-inactive-${suffix}`,
+          summary: 'An inactive session must not create content.',
+          category: 'update',
+          author: editor.id,
+        },
+      })
+      expect(writeAttempt.status()).toBe(403)
+    } finally {
+      await payload.update({
+        collection: 'users',
+        id: editor.id,
+        data: { isActive: true },
+        overrideAccess: true,
+      })
+    }
   })
 })

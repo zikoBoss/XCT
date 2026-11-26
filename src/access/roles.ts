@@ -1,11 +1,19 @@
 import type { Access, CollectionBeforeChangeHook, FieldAccess } from 'payload'
 
-export const isAdmin: Access = ({ req }) => req.user?.role === 'admin'
+export const isAdmin: Access = ({ req }) =>
+  req.user?.role === 'admin' && req.user?.isActive !== false
+
+export const isAdminField: FieldAccess = ({ req }) =>
+  req.user?.role === 'admin' && req.user?.isActive !== false
 
 export const canManageContent: Access = ({ req }) =>
-  req.user?.role === 'admin' || req.user?.role === 'editor'
+  req.user?.isActive !== false && (req.user?.role === 'admin' || req.user?.role === 'editor')
 
-export const canSetAuthor: FieldAccess = ({ req }) => req.user?.role === 'admin'
+export const canManageContentField: FieldAccess = ({ req }) =>
+  req.user?.isActive !== false && (req.user?.role === 'admin' || req.user?.role === 'editor')
+
+export const canSetAuthor: FieldAccess = ({ req }) =>
+  req.user?.role === 'admin' && req.user?.isActive !== false
 
 export const assignEditorAsAuthor: CollectionBeforeChangeHook = ({ data, operation, req }) => {
   if (operation === 'create' && req.user?.role === 'editor') {
@@ -19,7 +27,10 @@ export const assignEditorAsAuthor: CollectionBeforeChangeHook = ({ data, operati
 }
 
 export const readPublishedContent: Access = ({ req }) => {
-  if (req.user?.role === 'admin' || req.user?.role === 'editor') {
+  if (
+    req.user?.isActive !== false &&
+    (req.user?.role === 'admin' || req.user?.role === 'editor')
+  ) {
     return true
   }
 

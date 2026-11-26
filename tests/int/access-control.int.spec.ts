@@ -28,15 +28,15 @@ describe('XCT core access control', () => {
     payload = await getPayload({ config: await config })
     admin = await payload.create({
       collection: 'users',
-      data: { email: userEmails[0], password: 'test-password', role: 'admin' },
+      data: { email: userEmails[0], password: 'test-password', role: 'admin', isActive: true },
     })
     editor = await payload.create({
       collection: 'users',
-      data: { email: userEmails[1], password: 'test-password', role: 'editor' },
+      data: { email: userEmails[1], password: 'test-password', role: 'editor', isActive: true },
     })
     otherEditor = await payload.create({
       collection: 'users',
-      data: { email: userEmails[2], password: 'test-password', role: 'editor' },
+      data: { email: userEmails[2], password: 'test-password', role: 'editor', isActive: true },
     })
 
     const draftProject = await payload.create({
@@ -150,9 +150,25 @@ describe('XCT core access control', () => {
       where: { slug: { in: [draftHubSlug, publishedHubSlug, `${editorNewsSlug}-hub`] } },
       overrideAccess: true,
     })
+    const otherAdmins = await payload.find({
+      collection: 'users',
+      depth: 0,
+      limit: 1,
+      overrideAccess: true,
+      where: {
+        and: [
+          { role: { equals: 'admin' } },
+          { isActive: { equals: true } },
+          { id: { not_equals: admin.id } },
+        ],
+      },
+    })
+    const emailsToDelete =
+      otherAdmins.docs.length > 0 ? userEmails : userEmails.filter((email) => email !== userEmails[0])
+
     await payload.delete({
       collection: 'users',
-      where: { email: { in: userEmails } },
+      where: { email: { in: emailsToDelete } },
       overrideAccess: true,
     })
   })
@@ -353,6 +369,7 @@ describe('XCT core access control', () => {
             email: `b2-escalation-${suffix}@example.test`,
             password: 'test-password',
             role: 'admin',
+            isActive: true,
           },
           user: editor,
           overrideAccess: false,
@@ -394,6 +411,7 @@ describe('XCT core access control', () => {
           email: `b2-managed-${suffix}@example.test`,
           password: 'test-password',
           role: 'editor',
+          isActive: true,
         },
         user: admin,
         overrideAccess: false,

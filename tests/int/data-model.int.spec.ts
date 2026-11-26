@@ -91,9 +91,16 @@ describe('XCT data model', () => {
       expect(results.docs.every(({ _status }) => _status === 'published')).toBe(true)
     }
 
+    const publicHome = await payload.findGlobal({
+      slug: 'home',
+      overrideAccess: false,
+    })
+    expect(publicHome._status).toBe('published')
+
     await expect(
       payload.findGlobal({
         slug: 'home',
+        draft: true,
         overrideAccess: false,
       }),
     ).rejects.toThrow()

@@ -1,5 +1,7 @@
 import type { CollectionConfig } from 'payload'
-import { isAdmin } from '../access/roles'
+import { Forbidden } from 'payload'
+import { protectLastAdminDelete, protectLastAdminUpdate } from '../access/adminProtection'
+import { isAdmin, isAdminField } from '../access/roles'
 
 export const Users: CollectionConfig = {
   slug: 'users',
@@ -7,11 +9,26 @@ export const Users: CollectionConfig = {
     useAsTitle: 'email',
   },
   auth: true,
+  forceSelect: {
+    isActive: true,
+    role: true,
+  },
   access: {
     create: isAdmin,
     delete: isAdmin,
     read: isAdmin,
     update: isAdmin,
+  },
+  hooks: {
+    beforeChange: [protectLastAdminUpdate],
+    beforeDelete: [protectLastAdminDelete],
+    beforeLogin: [
+      ({ user, req }) => {
+        if (user.isActive === false) {
+          throw new Forbidden(req.t)
+        }
+      },
+    ],
   },
   fields: [
     {
@@ -30,8 +47,21 @@ export const Users: CollectionConfig = {
         },
       ],
       access: {
-        create: ({ req }) => req.user?.role === 'admin',
-        update: ({ req }) => req.user?.role === 'admin',
+        create: isAdminField,
+        update: isAdminField,
+      },
+      admin: {
+        position: 'sidebar',
+      },
+    },
+    {
+      name: 'isActive',
+      type: 'checkbox',
+      defaultValue: true,
+      required: true,
+      access: {
+        create: isAdminField,
+        update: isAdminField,
       },
       admin: {
         position: 'sidebar',

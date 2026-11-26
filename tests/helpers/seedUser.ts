@@ -13,9 +13,10 @@ export const testUser = {
 export async function seedTestUser(): Promise<void> {
   const payload = await getPayload({ config })
 
-  // Delete existing test user if any
-  await payload.delete({
+  const existing = await payload.find({
     collection: 'users',
+    limit: 1,
+    overrideAccess: true,
     where: {
       email: {
         equals: testUser.email,
@@ -23,11 +24,20 @@ export async function seedTestUser(): Promise<void> {
     },
   })
 
-  // Create fresh test user
-  await payload.create({
-    collection: 'users',
-    data: testUser,
-  })
+  if (existing.docs[0]) {
+    await payload.update({
+      collection: 'users',
+      id: existing.docs[0].id,
+      data: { ...testUser, isActive: true },
+      overrideAccess: true,
+    })
+  } else {
+    await payload.create({
+      collection: 'users',
+      data: { ...testUser, isActive: true },
+      overrideAccess: true,
+    })
+  }
 }
 
 /**
@@ -36,12 +46,29 @@ export async function seedTestUser(): Promise<void> {
 export async function cleanupTestUser(): Promise<void> {
   const payload = await getPayload({ config })
 
-  await payload.delete({
+  const otherAdmins = await payload.find({
     collection: 'users',
+    depth: 0,
+    limit: 1,
+    overrideAccess: true,
     where: {
-      email: {
-        equals: testUser.email,
-      },
+      and: [
+        { role: { equals: 'admin' } },
+        { isActive: { equals: true } },
+        { email: { not_equals: testUser.email } },
+      ],
     },
   })
+
+  if (otherAdmins.docs.length > 0) {
+    await payload.delete({
+      collection: 'users',
+      where: {
+        email: {
+          equals: testUser.email,
+        },
+      },
+      overrideAccess: true,
+    })
+  }
 }
