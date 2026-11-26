@@ -91,6 +91,15 @@ describe('XCT data model', () => {
       expect(results.docs.every(({ _status }) => _status === 'published')).toBe(true)
     }
 
+    await payload.updateGlobal({
+      slug: 'home',
+      data: {
+        hero: { title: 'Public Home fixture', summary: 'Published test content.' },
+        _status: 'published',
+      },
+      overrideAccess: true,
+    })
+
     const publicHome = await payload.findGlobal({
       slug: 'home',
       overrideAccess: false,
