@@ -5,6 +5,7 @@ import {
   canSetAuthor,
   readPublishedContent,
 } from '../access/roles'
+import { lockHubMediaReferences, lockHubMediaReferencesBeforeDelete } from '../access/media'
 
 export const Hubs: CollectionConfig = {
   slug: 'hubs',
@@ -22,7 +23,8 @@ export const Hubs: CollectionConfig = {
     drafts: true,
   },
   hooks: {
-    beforeChange: [assignEditorAsAuthor],
+    beforeChange: [lockHubMediaReferences, assignEditorAsAuthor],
+    beforeDelete: [lockHubMediaReferencesBeforeDelete],
   },
   fields: [
     {

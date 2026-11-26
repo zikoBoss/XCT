@@ -1,5 +1,6 @@
 import type { GlobalConfig } from 'payload'
 import { Forbidden } from 'payload'
+import { lockHomeMediaReferences } from '../access/media'
 import { canManageContent, canManageContentField, isAdminField } from '../access/roles'
 
 export const Home: GlobalConfig = {
@@ -11,6 +12,7 @@ export const Home: GlobalConfig = {
   },
   hooks: {
     beforeChange: [
+      lockHomeMediaReferences,
       ({ data, originalDoc, req }) => {
         if (req.user?.role !== 'editor' || req.user.isActive === false) {
           return data

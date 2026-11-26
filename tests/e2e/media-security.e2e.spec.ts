@@ -3,19 +3,98 @@ import os from 'node:os'
 import path from 'node:path'
 import { expect, test } from '@playwright/test'
 import sharp from 'sharp'
+import type { PostgresAdapter } from '@payloadcms/db-postgres'
 import { getPayload, type Payload, type TypedUser } from 'payload'
 import type { Home, Media } from '../../src/payload-types.js'
 import config from '../../src/payload.config.js'
 
 const serverURL = 'http://localhost:3000'
+const pngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])
 const suffix = `${Date.now()}`
 const password = 'media-test-password'
 const adminEmail = `b4-admin-${suffix}@example.test`
 const editorEmail = `b4-editor-${suffix}@example.test`
+const mediaReferenceLockNamespace = 84172932
+
+const isPostgresAdapter = (database: unknown): database is PostgresAdapter =>
+  typeof database === 'object' &&
+  database !== null &&
+  'sessions' in database &&
+  typeof database.sessions === 'object' &&
+  database.sessions !== null
+
+const getPostgresPool = () => {
+  const database = payload.db
+  if (!isPostgresAdapter(database)) {
+    throw new Error('Media security concurrency tests require the PostgreSQL adapter.')
+  }
+  return database.pool
+}
+
+const waitForAdvisoryLockWaiters = async (
+  pool: PostgresAdapter['pool'],
+  mediaID: number,
+  expectedWaiters: number,
+) => {
+  const deadline = Date.now() + 10_000
+  let waiters = 0
+
+  while (Date.now() < deadline) {
+    const result = await pool.query<{ count: number }>(
+      `SELECT count(*)::int AS count
+       FROM pg_locks
+       WHERE locktype = 'advisory'
+         AND classid = $1::oid
+         AND objid = $2::oid
+         AND granted = false`,
+      [mediaReferenceLockNamespace, mediaID],
+    )
+    waiters = result.rows[0]?.count ?? 0
+    if (waiters >= expectedWaiters) return waiters
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+
+  return waiters
+}
+
+const deleteWhileMediaLockIsHeld = async (
+  mediaID: number,
+  deleteContent: () => Promise<unknown>,
+) => {
+  const pool = getPostgresPool()
+  const connection = await pool.connect()
+  let deletion: Promise<unknown> | undefined
+  let waiters = 0
+
+  try {
+    await connection.query('BEGIN')
+    await connection.query('SELECT pg_advisory_xact_lock($1::integer, $2::integer)', [
+      mediaReferenceLockNamespace,
+      mediaID,
+    ])
+    deletion = deleteContent()
+    waiters = await waitForAdvisoryLockWaiters(pool, mediaID, 1)
+  } finally {
+    try {
+      await connection.query('ROLLBACK')
+    } finally {
+      connection.release()
+    }
+  }
+
+  if (!deletion) {
+    throw new Error('The content deletion did not start.')
+  }
+
+  const [result] = await Promise.allSettled([deletion])
+  expect(waiters).toBe(1)
+  expect(result.status).toBe('fulfilled')
+}
 
 let payload: Payload
 let admin: TypedUser
 let homeSnapshot: Home
+let homePublishedSnapshot: Home
 let fixtureDirectory: string
 let uploadSource: string
 let unlinkedMedia: Media
@@ -27,6 +106,7 @@ let homeDraftMedia: Media
 let projectCoverMedia: Media
 let projectGalleryMedia: Media
 let hubMedia: Media
+let raceMedia: Media | undefined
 let editorUploadedMediaID: number | undefined
 let draftNewsID: number
 let publishedNewsID: number
@@ -128,11 +208,7 @@ test.describe.serial('Media security', () => {
 
     draftNewsID = await createNews(`b4-draft-${suffix}`, draftMedia.id, true)
     publishedNewsID = await createNews(`b4-published-${suffix}`, publishedMedia.id, false)
-    mixedPublishedNewsID = await createNews(
-      `b4-mixed-published-${suffix}`,
-      mixedMedia.id,
-      false,
-    )
+    mixedPublishedNewsID = await createNews(`b4-mixed-published-${suffix}`, mixedMedia.id, false)
     mixedDraftNewsID = await createNews(`b4-mixed-draft-${suffix}`, mixedMedia.id, true)
 
     const project = await payload.create({
@@ -180,7 +256,7 @@ test.describe.serial('Media security', () => {
     })
     hubID = hub.id
 
-    await payload.updateGlobal({
+    homePublishedSnapshot = await payload.updateGlobal({
       slug: 'home',
       data: {
         hero: { title: 'Media test home', summary: 'Published Home media.', image: homeMedia.id },
@@ -224,6 +300,7 @@ test.describe.serial('Media security', () => {
             `b4-published-${suffix}`,
             `b4-mixed-published-${suffix}`,
             `b4-mixed-draft-${suffix}`,
+            `b4-race-${suffix}`,
           ],
         },
       },
@@ -258,6 +335,7 @@ test.describe.serial('Media security', () => {
       projectCoverMedia,
       projectGalleryMedia,
       hubMedia,
+      raceMedia,
     ]) {
       if (media?.id && !deletedMediaIDs.has(media.id)) {
         await payload.delete({
@@ -314,16 +392,20 @@ test.describe.serial('Media security', () => {
       const record = await request.get(`${serverURL}/api/media/${media.id}`)
       expect([403, 404]).toContain(record.status())
 
-      const original = await request.get(`${serverURL}/api/media/file/${media.filename}`)
-      expect(original.status()).toBe(403)
-      expect((await original.body()).subarray(0, 8)).not.toEqual(
-        Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
-      )
+      for (const filename of [media.filename, media.sizes?.thumbnail?.filename]) {
+        expect(filename).toBeTruthy()
 
-      const thumbnail = media.sizes?.thumbnail?.filename
-      expect(thumbnail).toBeTruthy()
-      const thumbnailResponse = await request.get(`${serverURL}/api/media/file/${thumbnail}`)
-      expect(thumbnailResponse.status()).toBe(403)
+        const apiFile = await request.get(`${serverURL}/api/media/file/${filename}`)
+        expect(apiFile.status()).toBe(403)
+        expect((await apiFile.body()).subarray(0, 8)).not.toEqual(pngSignature)
+
+        const directFile = await request.get(`${serverURL}/media/${filename}`)
+        expect(directFile.status()).not.toBe(200)
+        const optimizedFile = await request.get(
+          `${serverURL}/_next/image?url=${encodeURIComponent(`/api/media/file/${filename}`)}&w=640&q=75`,
+        )
+        expect(optimizedFile.status()).not.toBe(200)
+      }
     }
 
     for (const media of [
@@ -343,13 +425,16 @@ test.describe.serial('Media security', () => {
         expect(filename).toBeTruthy()
         const file = await request.get(`${serverURL}/api/media/file/${filename}`)
         expect(file.status()).toBe(200)
-        expect((await file.body()).subarray(0, 8)).toEqual(
-          Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
-        )
-      }
+        expect((await file.body()).subarray(0, 8)).toEqual(pngSignature)
 
-      const directFile = await request.get(`${serverURL}/media/${media.filename}`)
-      expect(directFile.status()).not.toBe(200)
+        const directFile = await request.get(`${serverURL}/media/${filename}`)
+        expect(directFile.status()).not.toBe(200)
+
+        const optimizedFile = await request.get(
+          `${serverURL}/_next/image?url=${encodeURIComponent(`/api/media/file/${filename}`)}&w=640&q=75`,
+        )
+        expect(optimizedFile.status()).not.toBe(200)
+      }
     }
 
     const graphQLPrivate = await request.post(`${serverURL}/api/graphql`, {
@@ -379,6 +464,261 @@ test.describe.serial('Media security', () => {
     expect((await mixedPrivateDraft.json()).docs).toHaveLength(0)
   })
 
+  test('Home media is private when Home has no published version', async ({ request }) => {
+    await payload.updateGlobal({
+      slug: 'home',
+      data: { _status: 'draft' },
+      user: admin,
+      overrideAccess: true,
+      draft: false,
+    })
+
+    try {
+      const homeRecord = await request.get(`${serverURL}/api/media/${homeMedia.id}`)
+      expect([403, 404]).toContain(homeRecord.status())
+
+      const homeFile = await request.get(`${serverURL}/api/media/file/${homeMedia.filename}`)
+      expect(homeFile.status()).toBe(403)
+    } finally {
+      const restoredHome = await payload.updateGlobal({
+        slug: 'home',
+        data: homePublishedSnapshot,
+        user: admin,
+        overrideAccess: true,
+        draft: false,
+      })
+      expect(restoredHome._status).toBe(homePublishedSnapshot._status)
+    }
+
+    await payload.updateGlobal({
+      slug: 'home',
+      data: { hero: { image: homeDraftMedia.id } },
+      user: admin,
+      overrideAccess: true,
+      draft: true,
+    })
+  })
+
+  test('concurrent media linking and deletion cannot leave a dangling reference', async () => {
+    raceMedia = await createMedia('link-delete-race')
+    const raceSlug = `b4-race-${suffix}`
+    const pool = getPostgresPool()
+    const connection = await pool.connect()
+    let waiters = 0
+    let results: PromiseSettledResult<unknown>[] = []
+    let connectionReleased = false
+
+    try {
+      await connection.query('BEGIN')
+      await connection.query('SELECT pg_advisory_xact_lock($1::integer, $2::integer)', [
+        mediaReferenceLockNamespace,
+        raceMedia.id,
+      ])
+
+      const operations: Promise<unknown>[] = [
+        payload.create({
+          collection: 'news',
+          data: {
+            title: raceSlug,
+            slug: raceSlug,
+            summary: 'Concurrent media link test.',
+            category: 'update',
+            author: admin.id,
+            cover: raceMedia.id,
+            _status: 'draft',
+          },
+          draft: true,
+          overrideAccess: true,
+        }),
+        payload.delete({
+          collection: 'media',
+          id: raceMedia.id,
+          overrideAccess: true,
+        }),
+      ]
+
+      waiters = await waitForAdvisoryLockWaiters(pool, raceMedia.id, 2)
+
+      await connection.query('ROLLBACK')
+      connection.release()
+      connectionReleased = true
+      results = await Promise.allSettled(operations)
+    } finally {
+      if (!connectionReleased) {
+        try {
+          await connection.query('ROLLBACK')
+        } finally {
+          connection.release()
+          connectionReleased = true
+        }
+      }
+    }
+
+    expect(waiters).toBe(2)
+    const [createResult, deleteResult] = results
+
+    const remainingMedia = await payload.find({
+      collection: 'media',
+      limit: 1,
+      overrideAccess: true,
+      where: { id: { equals: raceMedia.id } },
+    })
+    const linkedNews = await payload.find({
+      collection: 'news',
+      draft: true,
+      limit: 1,
+      overrideAccess: true,
+      where: { cover: { equals: raceMedia.id } },
+    })
+
+    expect(createResult.status).not.toBe(deleteResult.status)
+    if (remainingMedia.docs.length > 0) {
+      expect(linkedNews.docs).toHaveLength(1)
+      expect(deleteResult.status).toBe('rejected')
+    } else {
+      expect(linkedNews.docs).toHaveLength(0)
+      expect(createResult.status).toBe('rejected')
+      deletedMediaIDs.add(raceMedia.id)
+    }
+  })
+
+  test('content deletion locks media references in published and draft versions', async () => {
+    const createCases: Array<
+      (publishedMediaID: number, draftMediaID: number) => Promise<() => Promise<unknown>>
+    > = [
+      async (publishedMediaID, draftMediaID) => {
+        const slug = `b4-delete-news-${suffix}`
+        const doc = await payload.create({
+          collection: 'news',
+          data: {
+            title: slug,
+            slug,
+            summary: 'Published and draft media lock test.',
+            category: 'update',
+            author: admin.id,
+            cover: publishedMediaID,
+            _status: 'draft',
+          },
+          draft: true,
+          overrideAccess: true,
+        })
+        await payload.update({
+          collection: 'news',
+          id: doc.id,
+          data: { _status: 'published' },
+          draft: true,
+          overrideAccess: true,
+        })
+        await payload.update({
+          collection: 'news',
+          id: doc.id,
+          data: { cover: draftMediaID },
+          draft: true,
+          overrideAccess: true,
+        })
+        return () =>
+          payload.delete({
+            collection: 'news',
+            id: doc.id,
+            overrideAccess: true,
+          })
+      },
+      async (publishedMediaID, draftMediaID) => {
+        const slug = `b4-delete-project-${suffix}`
+        const doc = await payload.create({
+          collection: 'projects',
+          data: {
+            title: slug,
+            slug,
+            summary: 'Published and draft media lock test.',
+            author: admin.id,
+            cover: publishedMediaID,
+            _status: 'draft',
+          },
+          draft: true,
+          overrideAccess: true,
+        })
+        await payload.update({
+          collection: 'projects',
+          id: doc.id,
+          data: { _status: 'published' },
+          draft: true,
+          overrideAccess: true,
+        })
+        await payload.update({
+          collection: 'projects',
+          id: doc.id,
+          data: { cover: draftMediaID },
+          draft: true,
+          overrideAccess: true,
+        })
+        return () =>
+          payload.delete({
+            collection: 'projects',
+            id: doc.id,
+            overrideAccess: true,
+          })
+      },
+      async (publishedMediaID, draftMediaID) => {
+        const slug = `b4-delete-hub-${suffix}`
+        const doc = await payload.create({
+          collection: 'hubs',
+          data: {
+            title: slug,
+            slug,
+            summary: 'Published and draft media lock test.',
+            author: admin.id,
+            image: publishedMediaID,
+            _status: 'draft',
+          },
+          draft: true,
+          overrideAccess: true,
+        })
+        await payload.update({
+          collection: 'hubs',
+          id: doc.id,
+          data: { _status: 'published' },
+          draft: true,
+          overrideAccess: true,
+        })
+        await payload.update({
+          collection: 'hubs',
+          id: doc.id,
+          data: { image: draftMediaID },
+          draft: true,
+          overrideAccess: true,
+        })
+        return () =>
+          payload.delete({
+            collection: 'hubs',
+            id: doc.id,
+            overrideAccess: true,
+          })
+      },
+    ]
+
+    for (const [index, createCase] of createCases.entries()) {
+      const publishedReference = await createMedia(`delete-published-${index}`)
+      const draftReference = await createMedia(`delete-draft-${index}`)
+      const deleteContent = await createCase(publishedReference.id, draftReference.id)
+
+      await deleteWhileMediaLockIsHeld(draftReference.id, deleteContent)
+
+      await payload.delete({
+        collection: 'media',
+        id: publishedReference.id,
+        overrideAccess: true,
+      })
+      await payload.delete({
+        collection: 'media',
+        id: draftReference.id,
+        overrideAccess: true,
+      })
+      deletedMediaIDs.add(publishedReference.id)
+      deletedMediaIDs.add(draftReference.id)
+    }
+  })
+
   test('protected deletions and media-record deletion enforce role and references', async ({
     request,
   }) => {
@@ -397,6 +737,10 @@ test.describe.serial('Media security', () => {
 
     const linkedDelete = await request.delete(`${serverURL}/api/media/${draftMedia.id}`)
     expect(linkedDelete.status()).toBe(403)
+    const linkedHomeDraftDelete = await request.delete(
+      `${serverURL}/api/media/${homeDraftMedia.id}`,
+    )
+    expect(linkedHomeDraftDelete.status()).toBe(403)
 
     await payload.delete({
       collection: 'news',
@@ -410,10 +754,17 @@ test.describe.serial('Media security', () => {
     })
 
     await request.post(`${serverURL}/api/users/logout`)
-    const mixedOriginal = await request.get(
-      `${serverURL}/api/media/file/${mixedMedia.filename}`,
-    )
+    const mixedOriginal = await request.get(`${serverURL}/api/media/file/${mixedMedia.filename}`)
     expect(mixedOriginal.status()).toBe(403)
+    for (const filename of [mixedMedia.filename, mixedMedia.sizes?.thumbnail?.filename]) {
+      expect(filename).toBeTruthy()
+      const directFile = await request.get(`${serverURL}/media/${filename}`)
+      expect(directFile.status()).not.toBe(200)
+      const optimizedFile = await request.get(
+        `${serverURL}/_next/image?url=${encodeURIComponent(`/api/media/file/${filename}`)}&w=640&q=75`,
+      )
+      expect(optimizedFile.status()).not.toBe(200)
+    }
 
     const adminRelogin = await request.post(`${serverURL}/api/users/login`, {
       data: { email: adminEmail, password },
@@ -438,6 +789,20 @@ test.describe.serial('Media security', () => {
       `${serverURL}/api/media/file/${publishedMedia.filename}`,
     )
     expect(lastPublishedFile.status()).toBe(403)
+    for (const filename of [
+      publishedMedia.filename,
+      publishedMedia.sizes?.thumbnail?.filename,
+    ]) {
+      expect(filename).toBeTruthy()
+      const apiFile = await request.get(`${serverURL}/api/media/file/${filename}`)
+      expect(apiFile.status()).toBe(403)
+      const directFile = await request.get(`${serverURL}/media/${filename}`)
+      expect(directFile.status()).not.toBe(200)
+      const optimizedFile = await request.get(
+        `${serverURL}/_next/image?url=${encodeURIComponent(`/api/media/file/${filename}`)}&w=640&q=75`,
+      )
+      expect(optimizedFile.status()).not.toBe(200)
+    }
 
     const finalAdminLogin = await request.post(`${serverURL}/api/users/login`, {
       data: { email: adminEmail, password },
@@ -454,5 +819,50 @@ test.describe.serial('Media security', () => {
     const unlinkedRemoval = await request.delete(`${serverURL}/api/media/${unlinkedMedia.id}`)
     expect(unlinkedRemoval.status()).toBe(200)
     deletedMediaIDs.add(unlinkedMedia.id)
+
+    for (const media of [projectCoverMedia, projectGalleryMedia, hubMedia, homeMedia]) {
+      const linkedRemoval = await request.delete(`${serverURL}/api/media/${media.id}`)
+      expect(linkedRemoval.status(), `unexpected deletion of linked media: ${media.alt}`).toBe(403)
+      if (linkedRemoval.status() === 200) deletedMediaIDs.add(media.id)
+    }
+
+    await payload.update({
+      collection: 'projects',
+      id: projectID,
+      data: { cover: null, gallery: [], _status: 'published' },
+      draft: true,
+      overrideAccess: true,
+    })
+    await payload.update({
+      collection: 'hubs',
+      id: hubID,
+      data: { image: null, _status: 'published' },
+      draft: true,
+      overrideAccess: true,
+    })
+    await payload.updateGlobal({
+      slug: 'home',
+      data: { hero: { image: null }, _status: 'published' },
+      user: admin,
+      overrideAccess: true,
+      draft: false,
+    })
+
+    for (const media of [projectCoverMedia, projectGalleryMedia, hubMedia, homeMedia]) {
+      const unlinkedRemoval = await request.delete(`${serverURL}/api/media/${media.id}`)
+      expect(unlinkedRemoval.status()).toBe(200)
+      deletedMediaIDs.add(media.id)
+    }
+
+    await payload.updateGlobal({
+      slug: 'home',
+      data: { hero: { image: null } },
+      user: admin,
+      overrideAccess: true,
+      draft: true,
+    })
+    const homeDraftRemoval = await request.delete(`${serverURL}/api/media/${homeDraftMedia.id}`)
+    expect(homeDraftRemoval.status()).toBe(200)
+    deletedMediaIDs.add(homeDraftMedia.id)
   })
 })

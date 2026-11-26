@@ -5,6 +5,7 @@ import {
   canSetAuthor,
   readPublishedContent,
 } from '../access/roles'
+import { lockProjectMediaReferences, lockProjectMediaReferencesBeforeDelete } from '../access/media'
 
 export const Projects: CollectionConfig = {
   slug: 'projects',
@@ -22,7 +23,8 @@ export const Projects: CollectionConfig = {
     drafts: true,
   },
   hooks: {
-    beforeChange: [assignEditorAsAuthor],
+    beforeChange: [lockProjectMediaReferences, assignEditorAsAuthor],
+    beforeDelete: [lockProjectMediaReferencesBeforeDelete],
   },
   fields: [
     {

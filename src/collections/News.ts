@@ -5,6 +5,7 @@ import {
   canSetAuthor,
   readPublishedContent,
 } from '../access/roles'
+import { lockNewsMediaReferences, lockNewsMediaReferencesBeforeDelete } from '../access/media'
 
 export const News: CollectionConfig = {
   slug: 'news',
@@ -22,7 +23,8 @@ export const News: CollectionConfig = {
     drafts: true,
   },
   hooks: {
-    beforeChange: [assignEditorAsAuthor],
+    beforeChange: [lockNewsMediaReferences, assignEditorAsAuthor],
+    beforeDelete: [lockNewsMediaReferencesBeforeDelete],
   },
   fields: [
     {
