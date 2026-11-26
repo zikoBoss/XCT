@@ -1,67 +1,73 @@
-# Payload Blank Template
+# XCT
 
-This template comes configured with the bare minimum to get started on anything you need.
+XCT is currently based on Payload CMS 3.94.2, Next.js, and PostgreSQL. This repository is a development foundation; the application still contains the Payload starter content.
 
-## Quick start
+## Requirements
 
-This template can be deployed directly from our Cloud hosting and it will setup MongoDB and cloud S3 object storage for media.
+- Node.js 22.23.5 (see `.nvmrc`)
+- npm
+- Docker Engine and the Docker Compose plugin for the local PostgreSQL service
 
-## Quick Start - local setup
+The project uses `package-lock.json`; use npm commands rather than pnpm or Yarn.
 
-To spin up this template locally, follow these steps:
+## Local development
 
-### Clone
+1. Copy `.env.example` to `.env`.
+2. Replace the local-only PostgreSQL password and `PAYLOAD_SECRET` values. Do not commit `.env` or use these development settings in production.
+3. Install exactly from the lockfile:
 
-After you click the `Deploy` button above, you'll want to have standalone copy of this repo on your machine. If you've already cloned this repo, skip to [Development](#development).
+   ```sh
+   npm ci
+   ```
 
-### Development
+4. Start PostgreSQL:
 
-1. First [clone the repo](#clone) if you have not done so already
-2. `cd my-project && cp .env.example .env` to copy the example environment variables. You'll need to add the `MONGODB_URL` from your Cloud project to your `.env` if you want to use S3 storage and the MongoDB database that was created for you.
+   ```sh
+   docker compose up -d postgres
+   ```
 
-3. `pnpm install && pnpm dev` to install dependencies and start the dev server
-4. open `http://localhost:3000` to open the app in your browser
+5. Start the application on the host:
 
-That's it! Changes made in `./src` will be reflected in your app. Follow the on-screen instructions to login and create your first admin user. Then check out [Production](#production) once you're ready to build and serve your app, and [Deployment](#deployment) when you're ready to go live.
+   ```sh
+   npm run dev
+   ```
 
-#### Docker (Optional)
+Open <http://localhost:3000>. The Compose file starts PostgreSQL only; the application uses the host's Node.js and npm installation.
 
-If you prefer to use Docker for local development instead of a local MongoDB instance, the provided docker-compose.yml file can be used.
+In this setup, `DATABASE_URL` uses `localhost` because the app runs on the host. If the application is later run as a container on the same Compose network, use the PostgreSQL service name (`postgres`) as the database hostname instead. Do not use `localhost` from inside the application container to reach the database container.
 
-To do so, follow these steps:
+The Compose service binds PostgreSQL to `127.0.0.1` and stores its data in a named local-development volume. It is not a production database configuration.
 
-- Modify the `MONGODB_URL` in your `.env` file to `mongodb://127.0.0.1/<dbname>`
-- Modify the `docker-compose.yml` file's `MONGODB_URL` to match the above `<dbname>`
-- Run `docker-compose up` to start the database, optionally pass `-d` to run in the background.
+## Environment variables
 
-## How it works
+| Variable | Purpose |
+| --- | --- |
+| `DATABASE_URL` | PostgreSQL connection string used by Payload. |
+| `PAYLOAD_SECRET` | Secret used by Payload. Supply a private, randomly generated value outside source control. |
+| `POSTGRES_USER` | Local PostgreSQL user used by the Compose service. |
+| `POSTGRES_PASSWORD` | Local PostgreSQL password used by the Compose service. |
+| `POSTGRES_DB` | Local PostgreSQL database name used by the Compose service. |
 
-The Payload config is tailored specifically to the needs of most websites. It is pre-configured in the following ways:
+The values in `.env.example` are placeholders for local development only. Replace them before use; never reuse them in production.
 
-### Collections
+## Tests and checks
 
-See the [Collections](https://payloadcms.com/docs/configuration/collections) docs for details on how to extend this functionality.
+```sh
+npm run lint
+npm run test:int
+npm run test:e2e
+npm test
+npm run build
+```
 
-- #### Users (Authentication)
+Integration tests require a reachable PostgreSQL database configured by `DATABASE_URL`. Playwright tests start the app with `npm run dev` and require the Playwright browser to be installed.
 
-  Users are auth-enabled collections that have access to the admin panel.
+## Docker image
 
-  For additional help, see the official [Auth Example](https://github.com/payloadcms/payload/tree/3.x/examples/auth) or the [Authentication](https://payloadcms.com/docs/authentication/overview#authentication-overview) docs.
+The `Dockerfile` builds a Next.js standalone image using Node.js 22.23.5 and `npm ci`. Provide `DATABASE_URL` and `PAYLOAD_SECRET` at container runtime; the image does not include credentials. Build with:
 
-- #### Media
+```sh
+docker build -t xct:local .
+```
 
-  This is the uploads enabled collection. It features pre-configured sizes, focal point and manual resizing to help you manage your pictures.
-
-### Docker
-
-Alternatively, you can use [Docker](https://www.docker.com) to spin up this template locally. To do so, follow these steps:
-
-1. Follow [steps 1 and 2 from above](#development), the docker-compose file will automatically use the `.env` file in your project root
-1. Next run `docker-compose up`
-1. Follow [steps 4 and 5 from above](#development) to login and create your first admin user
-
-That's it! The Docker instance will help you get up and running quickly while also standardizing the development environment across your teams.
-
-## Questions
-
-If you have any issues or questions, reach out to us on [Discord](https://discord.com/invite/payload) or start a [GitHub discussion](https://github.com/payloadcms/payload/discussions).
+The build context excludes local environment files, dependencies, and generated build output. There is currently no `public/` directory, so the Dockerfile does not copy one.
