@@ -34,6 +34,28 @@ The project uses `package-lock.json`; use npm commands rather than pnpm or Yarn.
 
 Open <http://localhost:3000>. The Compose file starts PostgreSQL only; the application uses the host's Node.js and npm installation.
 
+## Database migrations
+
+Schema push is disabled. Create and review a migration when Payload collection or global schemas change, then apply committed migrations with:
+
+```sh
+npm run migrate:create -- initial
+npm run migrate
+npm run migrate:status
+```
+
+Run migrations against an empty or explicitly prepared PostgreSQL database before starting the application. Do not run the initial migration against a database whose schema was previously created by automatic schema push; that database needs a separately reviewed baseline procedure. The initial migration's `down` operation drops the generated application tables and their data. Do not run `migrate:down`, `migrate:refresh`, `migrate:reset`, or `migrate:fresh` against a database whose data must be retained.
+
+## Initial administrator
+
+After migrations are applied and `DATABASE_URL` and a private `PAYLOAD_SECRET` are configured, create the first administrator from an interactive terminal:
+
+```sh
+npm run bootstrap:admin
+```
+
+The command prompts for the email and hidden password twice. Credentials are not accepted as command-line arguments, and the command refuses to proceed if an active administrator already exists. It is a local CLI operation, not a public registration endpoint.
+
 In this setup, `DATABASE_URL` uses `localhost` because the app runs on the host. If the application is later run as a container on the same Compose network, use the PostgreSQL service name (`postgres`) as the database hostname instead. Do not use `localhost` from inside the application container to reach the database container.
 
 The Compose service binds PostgreSQL to `127.0.0.1` and stores its data in a named local-development volume. It is not a production database configuration.

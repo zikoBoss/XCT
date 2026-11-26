@@ -15,7 +15,9 @@ const isPostgresAdapter = (database: unknown): database is PostgresAdapter =>
   typeof database.sessions === 'object' &&
   database.sessions !== null
 
-const lockLastAdminInvariant = async (req: Parameters<CollectionBeforeChangeHook>[0]['req']) => {
+export const acquireLastAdminLock = async (
+  req: Parameters<CollectionBeforeChangeHook>[0]['req'],
+) => {
   const transactionID = await req.transactionID
   if (!isPostgresAdapter(req.payload.db)) {
     throw new Error('Last-admin protection requires the PostgreSQL database adapter.')
@@ -28,7 +30,10 @@ const lockLastAdminInvariant = async (req: Parameters<CollectionBeforeChangeHook
   }
 
   await transaction.execute(sql`SELECT pg_advisory_xact_lock(${LAST_ADMIN_LOCK}, 1)`)
+}
 
+const lockLastAdminInvariant = async (req: Parameters<CollectionBeforeChangeHook>[0]['req']) => {
+  await acquireLastAdminLock(req)
   const activeAdmins = await req.payload.find({
     collection: 'users',
     depth: 0,
